@@ -1,5 +1,12 @@
+'use client';
+
+import { interviewer } from '@/constants';
+import { createFeedback } from '@/lib/actions/general.action';
 import { cn } from '@/lib/utils';
+import { vapi } from '@/lib/vapi.sdk';
 import Image from 'next/image'
+import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 
 enum CallStatus {
   INACTIVE = 'INACTIVE',
@@ -8,18 +15,120 @@ enum CallStatus {
   FINISHED = 'FINISHED'
 }
 
-const Agent = ({ userName }: AgentProps) => {
-  
-  // ✅ Fix: Explicitly assert enum type to avoid TS narrowing issue
-  const callstatus = CallStatus.FINISHED as CallStatus;
-  // const call = CallStatus.FINISHED as CallStatus;
-  const isSpeaking = true;
-  const messages = [
-    'Whats your name?',
-    'My name is Rich Deep, nice to meet you!'
-  ];
+interface SavedMessage {
+  role: 'user' | 'system' | 'assistant';
+  content: string;
 
-  const lastMessage = messages[messages.length - 1];
+}
+
+const Agent = ({ userName, userId, type, interviewId, questions }: AgentProps) => {
+    const router = useRouter();
+    const [isSpeaking, setIsSpeaking] = useState(false)
+    const [callStatus, setCallStatus] = useState<CallStatus>(CallStatus.INACTIVE)
+    const [messages, setMessages] = useState<SavedMessage[]>([])
+  
+  
+  useEffect(() => {
+    const onCallStart = () => setCallStatus(CallStatus.ACTIVE)
+    const onCallEnd = () => setCallStatus(CallStatus.FINISHED)
+
+const onMessage = (message: Message) => {
+  if(message.type === 'transcript' && message.transcriptType === 'final') {
+    const newMessage = {role: message.role, content: message.transcript}
+
+    setMessages((prev) => [...prev, newMessage])
+  }
+}
+
+const onSpeechStart = () => setIsSpeaking(true);
+const onSpeechEnd = () => setIsSpeaking(false)
+
+const onError = (error: Error) => console.log('Error', error)
+
+vapi.on('call-start', onCallStart)
+vapi.on('call-end', onCallEnd)
+vapi.on('message', onMessage)
+vapi.on('speech-start', onSpeechStart);
+vapi.on('speech-end', onSpeechEnd)
+vapi.on('error', onError)
+
+return () => {
+vapi.off('call-start', onCallStart)
+vapi.off('call-end', onCallEnd)
+vapi.off('message', onMessage)
+vapi.off('speech-start', onSpeechStart);
+vapi.off('speech-end', onSpeechEnd)
+vapi.off('error', onError)
+}
+}, [])
+
+const handleGenerateFeedback = async (messages:SavedMessage[]) => {
+  console.log('Generate Feedback')
+
+  //TODO: Create a server action that generates feedback
+
+  const {success, feedbackId: id} =await createFeedback({
+    interviewId: interviewId!,
+    userId: userId!,
+    transcript: messages
+  })
+
+  if(success && id){
+    router.push(`/interview/${interviewId}/feedback`)
+  }else{
+    console.log('Error saving feedback')
+
+    router.push('/')
+  }
+}
+
+useEffect(() => {
+
+ if(callStatus === CallStatus.FINISHED){
+  if(type === 'generate'){
+    router.push('/')
+  } else{
+    handleGenerateFeedback(messages)
+  }
+ } 
+}, [messages, callStatus, type, userId])
+
+const handleCall = async () => {
+  setCallStatus(CallStatus.CONNECTING)
+  if(type === 'generate'){
+
+    await vapi.start(process.env.NEXT_PUBLIC_VAPI_WORKFLOW_ID!, {
+      variableValues: {
+        username: userName,
+        userid: userId
+      }
+    })
+  }else{
+    let formattedQuestions = '';
+
+    if(questions){
+      formattedQuestions = questions
+      .map((question) => `-${question}`)
+      .join('\n')
+    }
+
+    await vapi.start(interviewer, {
+      variableValues :{
+        questions:formattedQuestions
+      }
+    })
+  }
+
+}
+const handleDisconnectCall = async () => {
+  setCallStatus(CallStatus.FINISHED)
+
+  vapi.stop()
+}
+
+const latestMessage = messages[messages.length -1]?.content
+
+const isCallInactiveOrFinished = callStatus === CallStatus.INACTIVE || callStatus === CallStatus.FINISHED
 
   return (
     <>
@@ -51,8 +160,8 @@ const Agent = ({ userName }: AgentProps) => {
       {messages.length > 0 && (
         <div className='bg-gradient-to-b from-[#7d8084] to-[#4B4D4F33] p-0.5 rounded-2xl w-full'>
           <div className='bg-gradient-to-b from-[#000305] to-[#08090D] rounded-2xl  min-h-12 px-5 py-3 flex items-center justify-center'>
-            <p key={lastMessage} className={cn('transition-opacity duration-500 opacity-0', 'animate-fadeIn opacity-100')}>
-              {lastMessage}
+            <p key={latestMessage} className={cn('transition-opacity duration-500 opacity-0', 'animate-fadeIn opacity-100')}>
+              {latestMessage}
             </p>
           </div>
         </div>
@@ -60,18 +169,18 @@ const Agent = ({ userName }: AgentProps) => {
 
       {/* Call Control Button */}
       <div className='w-full flex justify-center'>
-        {callstatus !== 'ACTIVE' ? (
-          <button className='inline-block px-7 py-3 text-sm font-bold leading-5 text-white bg-green-600 transition-colors duration-150 border border-transparent rounded-full shadow-sm focus:outline-none focus:shadow-2xl active:bg-green-700 min-w-28'>
-            <span className={cn('absolute animate-ping rounded-full opacity-75', callstatus !== 'CONNECTING' && 'hidden')} />
+        {callStatus !== 'ACTIVE' ? (
+          <button className='relative inline-block px-7 py-3 text-sm font-bold leading-5 text-white bg-green-600 transition-colors duration-150 border border-transparent rounded-full shadow-sm focus:outline-none focus:shadow-2xl active:bg-green-700 min-w-28' onClick={handleCall}>
+            <span className={cn('absolute animate-ping rounded-full opacity-75', callStatus !== 'CONNECTING' && 'hidden')} />
 
             <span>
-            {callstatus === 'INACTIVE' || callstatus === 'FINISHED'
+            {isCallInactiveOrFinished
               ? 'Call'
               : '. . .'}
             </span>
           </button>
         ) : (
-          <button className='inline-block px-7 py-3 text-sm font-bold leading-5 text-white transition-colors duration-150 bg-destructive-100 border border-transparent rounded-full shadow-sm focus:outline-none focus:shadow-2xl active:bg-destructive-200 hover:bg-destructive-200 min-w-28'>
+          <button className='inline-block px-7 py-3 text-sm font-bold leading-5 text-white transition-colors duration-150 bg-destructive-100 border border-transparent rounded-full shadow-sm focus:outline-none focus:shadow-2xl active:bg-destructive-200 hover:bg-destructive-200 min-w-28' onClick={handleDisconnectCall}>
             End
           </button>
         )}
